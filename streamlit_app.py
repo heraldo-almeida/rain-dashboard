@@ -13,7 +13,6 @@ BR_TZ = pytz.timezone("America/Sao_Paulo")
 st.set_page_config(page_title="Brazil Precipitation Dashboard", layout="wide")
 st.title("🌧️ Brazil Precipitation Dashboard")
 
-
 # =========================================================
 # CITY LIST (12 CITIES, ALPHABETICAL)
 # =========================================================
@@ -32,7 +31,6 @@ CITIES = {
     "Vassouras": (-22.4039, -43.6628),
 }
 CITY_NAMES = sorted(CITIES.keys())
-
 
 # =========================================================
 # HELPERS
@@ -86,13 +84,11 @@ def get_monthly_precip(lat: float, lon: float) -> pd.DataFrame:
     df = df.sort_values("month").tail(12)
     return df
 
-
 # =========================================================
 # UI – CITY SELECTION
 # =========================================================
 city = st.selectbox("Select city", CITY_NAMES)
 lat, lon = CITIES[city]
-
 
 # =========================================================
 # LOAD DATA
@@ -103,28 +99,21 @@ with st.spinner("Loading hourly data..."):
 with st.spinner("Loading monthly data..."):
     df_monthly = get_monthly_precip(lat, lon)
 
-
 # =========================================================
-# FIX TIMEZONE COMPARISON
+# FIX TIMEZONE / TIMESTAMP COMPARISON
 # =========================================================
-# Convert times to timezone-aware Brazil, then back to naive local
-df_hourly["time"] = (
-    pd.to_datetime(df_hourly["time"], utc=True)
-    .dt.tz_convert("America/Sao_Paulo")
-    .dt.tz_localize(None)
-)
+df_hourly["time"] = pd.to_datetime(df_hourly["time"], utc=True)
+df_hourly["time"] = df_hourly["time"].dt.tz_convert("America/Sao_Paulo").dt.tz_localize(None)
 
-# current local time, naive
-now_br = datetime.now(BR_TZ).replace(tzinfo=None)
+now_br_aware = datetime.now(BR_TZ)
+now_br = now_br_aware.replace(tzinfo=None)
 
+df_hourly["ts"] = df_hourly["time"].astype("int64")
+now_ts = pd.Timestamp(now_br).value
 
-# =========================================================
-# SPLIT HISTORY / FORECAST
-# =========================================================
-hist_mask = df_hourly["time"] <= now_br
+hist_mask = df_hourly["ts"] <= now_ts
 df_hist = df_hourly[hist_mask]
 df_forecast = df_hourly[~hist_mask]
-
 
 # =========================================================
 # CURRENT PRECIP + EMOJI
@@ -138,9 +127,9 @@ status = rain_emoji(latest_precip)
 
 st.subheader(f"{city} — Current rain status: {status}")
 st.caption(
-    f"Last observed hourly precipitation: {latest_precip:.2f} mm"
+    f"Last observed hourly precipitation: {latest_precip:.2f} mm "
+    f"(local time {now_br_aware.strftime('%d/%m/%Y %H:%M')} BRT)"
 )
-
 
 # =========================================================
 # HOURLY LINE CHART (7 DAYS + FORECAST DASHED)
@@ -176,7 +165,6 @@ fig_hourly.update_layout(
 )
 st.plotly_chart(fig_hourly, use_container_width=True)
 
-
 # =========================================================
 # MONTHLY BAR CHART (12 MONTHS)
 # =========================================================
@@ -193,7 +181,6 @@ else:
         hovermode="x unified",
     )
     st.plotly_chart(fig_month, use_container_width=True)
-
 
 # =========================================================
 # OPTIONAL DEBUG TABLE
