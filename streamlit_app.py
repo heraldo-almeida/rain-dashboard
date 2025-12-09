@@ -1,112 +1,124 @@
 import streamlit as st
-import pandas as pd
-import altair as alt
 import requests
+import pandas as pd
 from datetime import datetime
 import pytz
 
-# -----------------------------------------------------------
-# Streamlit configuration
-# -----------------------------------------------------------
-st.set_page_config(page_title="Brazil Rainfall Dashboard", layout="wide")
-st.title("Rainfall in Brazilian Capitals (INMET)")
+st.set_page_config(page_title="Brazil Weather Dashboard", layout="wide")
 
-# Brazilian timezone
-tz_br = pytz.timezone("America/Sao_Paulo")
-now_br = datetime.now(tz_br)
+# -----------------------------
+# Timezone (Brazil GMT-3)
+# -----------------------------
+BR_TZ = pytz.timezone("America/Sao_Paulo")
 
-st.write(f"Current time in Brazil: **{now_br.strftime('%d/%m/%Y %H:%M')}**")
+# -----------------------------
+# Cities: Capitals + Your 4 cities
+# -----------------------------
+cities = {
+    # --- Your cities ---
+    "Poços de Caldas - MG": {"city": "Poços de Caldas", "state": "MG", "lat": -21.7878, "lon": -46.5608},
+    "Vassouras - RJ": {"city": "Vassouras", "state": "RJ", "lat": -22.4039, "lon": -43.6628},
+    "Botucatu - SP": {"city": "Botucatu", "state": "SP", "lat": -22.8858, "lon": -48.4450},
+    "Campinas - SP": {"city": "Campinas", "state": "SP", "lat": -22.9056, "lon": -47.0608},
 
-# -----------------------------------------------------------
-# Capital cities mapped to INMET station codes
-# -----------------------------------------------------------
-capitals = {
-    "Rio de Janeiro": "A652",
-    "São Paulo": "A701",
-    "Belo Horizonte": "A507",
-    "Brasília": "A001",
-    "Salvador": "A402",
-    "Curitiba": "A807",
-    "Fortaleza": "A304",
-    "Manaus": "A101",
-    "Porto Alegre": "A803",
-    "Recife": "A301",
+    # --- Brazil state capitals ---
+    "Rio Branco - AC": {"city": "Rio Branco", "state": "AC"},
+    "Maceió - AL": {"city": "Maceió", "state": "AL"},
+    "Macapá - AP": {"city": "Macapá", "state": "AP"},
+    "Manaus - AM": {"city": "Manaus", "state": "AM"},
+    "Salvador - BA": {"city": "Salvador", "state": "BA"},
+    "Fortaleza - CE": {"city": "Fortaleza", "state": "CE"},
+    "Brasília - DF": {"city": "Brasília", "state": "DF"},
+    "Vitória - ES": {"city": "Vitória", "state": "ES"},
+    "Goiânia - GO": {"city": "Goiânia", "state": "GO"},
+    "São Luís - MA": {"city": "São Luís", "state": "MA"},
+    "Cuiabá - MT": {"city": "Cuiabá", "state": "MT"},
+    "Campo Grande - MS": {"city": "Campo Grande", "state": "MS"},
+    "Belo Horizonte - MG": {"city": "Belo Horizonte", "state": "MG"},
+    "Belém - PA": {"city": "Belém", "state": "PA"},
+    "João Pessoa - PB": {"city": "João Pessoa", "state": "PB"},
+    "Curitiba - PR": {"city": "Curitiba", "state": "PR"},
+    "Recife - PE": {"city": "Recife", "state": "PE"},
+    "Teresina - PI": {"city": "Teresina", "state": "PI"},
+    "Rio de Janeiro - RJ": {"city": "Rio de Janeiro", "state": "RJ"},
+    "Natal - RN": {"city": "Natal", "state": "RN"},
+    "Porto Alegre - RS": {"city": "Porto Alegre", "state": "RS"},
+    "Porto Velho - RO": {"city": "Porto Velho", "state": "RO"},
+    "Boa Vista - RR": {"city": "Boa Vista", "state": "RR"},
+    "Florianópolis - SC": {"city": "Florianópolis", "state": "SC"},
+    "São Paulo - SP": {"city": "São Paulo", "state": "SP"},
+    "Aracaju - SE": {"city": "Aracaju", "state": "SE"},
+    "Palmas - TO": {"city": "Palmas", "state": "TO"},
 }
 
-city = st.selectbox("Select a capital city:", list(capitals.keys()))
-station_id = capitals[city]
+# -----------------------------
+# Select City
+# -----------------------------
+st.title("🌤️ Brazil Weather Dashboard")
+selected_city = st.selectbox("Select a city:", list(cities.keys()))
 
-# -----------------------------------------------------------
-# Fetch data from INMET for today's date
-# -----------------------------------------------------------
-url = f"https://apitempo.inmet.gov.br/estacao/{now_br.year}-{now_br.month:02d}-{now_br.day:02d}"
+city_data = cities[selected_city]
+city_name = city_data["city"]
+
+# -----------------------------
+# Fetch Weather Data
+# -----------------------------
+API_URL = f"https://wttr.in/{city_name}?format=j1"
 
 try:
-    response = requests.get(url, timeout=10)
-    data = response.json()
-except Exception:
-    st.error("Could not fetch data.")
+    response = requests.get(API_URL)
+    response.raise_for_status()
+    weather_json = response.json()
+except Exception as e:
+    st.error(f"Could not fetch data: {e}")
     st.stop()
 
-# -----------------------------------------------------------
-# Filter the chosen station
-# -----------------------------------------------------------
-df = pd.DataFrame([x for x in data if x["CD_ESTACAO"] == station_id])
+# -----------------------------
+# Extract Current Conditions
+# -----------------------------
+current = weather_json["current_condition"][0]
 
-if df.empty:
-    st.warning("No INMET data found for today for this station.")
-    st.stop()
+temp = float(current["temp_C"])
+feels_like = float(current["FeelsLikeC"])
+humidity = float(current["humidity"])
+wind = float(current["windspeedKmph"])
+desc = current["weatherDesc"][0]["value"]
 
-# -----------------------------------------------------------
-# Debug table — raw timestamp values exactly as returned by INMET
-# -----------------------------------------------------------
-st.subheader("Raw INMET timestamps (debug)")
-st.dataframe(df[["DT_MEDICAO", "HR_MEDICAO"]])
+# Correct local time in GMT-3
+now_br = datetime.now(BR_TZ).strftime("%d/%m/%Y %H:%M")
 
-# -----------------------------------------------------------
-# Datetime cleaning and timezone conversion
-# -----------------------------------------------------------
-df["datetime"] = pd.to_datetime(df["DT_MEDICAO"] + " " + df["HR_MEDICAO"], errors="coerce")
+# -----------------------------
+# Extract Hourly Forecast
+# -----------------------------
+today = weather_json["weather"][0]["hourly"]
+times = []
+temps = []
 
-# INMET timestamps are UTC — convert to Brazil time
-df["datetime"] = df["datetime"].dt.tz_localize("UTC").dt.tz_convert(tz_br)
+for entry in today:
+    hour = str(entry["time"]).zfill(4)
+    hour_fmt = f"{hour[:2]}:{hour[2:]}"
+    temp_c = float(entry["tempC"])
+    times.append(hour_fmt)
+    temps.append(temp_c)
 
-# Convert rainfall to numeric
-df["rain_mm"] = pd.to_numeric(df["CHUVA"], errors="coerce").fillna(0)
+df = pd.DataFrame({"Time": times, "Temperature (°C)": temps})
 
-# Sort chronologically
-df = df.sort_values("datetime")
+# -----------------------------
+# Display Current Conditions
+# -----------------------------
+st.subheader(f"Weather in **{selected_city}**")
+col1, col2, col3, col4 = st.columns(4)
 
-# Table-friendly datetime
-df["Time (Brazil)"] = df["datetime"].dt.strftime("%d/%m %H:%M")
+col1.metric("🌡️ Temperature", f"{temp} °C")
+col2.metric("🤔 Feels Like", f"{feels_like} °C")
+col3.metric("💧 Humidity", f"{humidity}%")
+col4.metric("💨 Wind", f"{wind} km/h")
 
-# -----------------------------------------------------------
-# Line chart
-# -----------------------------------------------------------
-chart = (
-    alt.Chart(df)
-    .mark_line(point=True)
-    .encode(
-        x=alt.X(
-            "datetime:T",
-            title="Time (Brazil)",
-            axis=alt.Axis(format="%H:%M")  # 24h format
-        ),
-        y=alt.Y("rain_mm:Q", title="Rainfall (mm)"),
-        tooltip=[
-            alt.Tooltip("datetime:T", title="Time (Brazil)", format="%H:%M"),
-            alt.Tooltip("rain_mm:Q", title="Rain (mm)")
-        ]
-    )
-    .properties(height=350)
-)
+st.write(f"**Condition:** {desc}")
+st.write(f"⏰ **Local Time (GMT-3):** {now_br}")
 
-st.altair_chart(chart, use_container_width=True)
-
-# -----------------------------------------------------------
-# Final table
-# -----------------------------------------------------------
-st.subheader("Rainfall Table")
-st.dataframe(
-    df[["Time (Brazil)", "rain_mm"]].rename(columns={"rain_mm": "Rainfall (mm)"})
-)
+# -----------------------------
+# Plot
+# -----------------------------
+st.subheader("📈 Temperature Today")
+st.line_chart(df.set_index("Time"))
