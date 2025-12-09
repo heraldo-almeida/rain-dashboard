@@ -59,37 +59,44 @@ def fetch_precip(lat, lon):
     return df
 
 # ------------------------------------------------------------------
-# FETCH MONTHLY DATA (LAST 12 MONTHS) FROM OPEN-METEO CLIMATE API
+# FETCH MONTHLY DATA (LAST 12 MONTHS) FROM ARCHIVE API (ERA5)
 # ------------------------------------------------------------------
 def fetch_monthly_precip(lat, lon):
     today = datetime.utcnow().date()
-    one_year_ago = (today - timedelta(days=365))
+    start = today - timedelta(days=365)
 
     url = (
-        "https://climate-api.open-meteo.com/v1/climate"
+        "https://archive-api.open-meteo.com/v1/era5"
         f"?latitude={lat}&longitude={lon}"
-        f"&start_date={one_year_ago}&end_date={today}"
-        "&monthly=precipitation_sum"
+        f"&start_date={start}&end_date={today}"
+        "&daily=precipitation_sum"
+        "&timezone=America%2FSao_Paulo"
     )
 
     r = requests.get(url)
     data = r.json()
 
-    if "monthly" not in data:
+    if "daily" not in data:
         return pd.DataFrame(columns=["month", "precip"])
 
-    months = data["monthly"].get("time", [])
-    precip = data["monthly"].get("precipitation_sum", [])
+    dates = data["daily"].get("time", [])
+    precip = data["daily"].get("precipitation_sum", [])
 
-    if not months:
+    if not dates:
         return pd.DataFrame(columns=["month", "precip"])
 
-    df = pd.DataFrame({"month": months, "precip": precip})
-    df["month"] = pd.to_datetime(df["month"])
-    df.sort_values("month", inplace=True)
+    df = pd.DataFrame({"date": dates, "precip": precip})
+    df["date"] = pd.to_datetime(df["date"])
+    df["month"] = df["date"].dt.to_period("M").dt.to_timestamp()
 
-    # keep last 12 months just in case more are returned
-    return df.tail(12)
+    monthly = (
+        df.groupby("month", as_index=False)["precip"]
+        .sum()
+        .sort_values("month")
+        .tail(12)
+    )
+    monthly.rename(columns={"month": "month", "precip": "precip"}, inplace=True)
+    return monthly
 
 # ------------------------------------------------------------------
 # APP UI
@@ -98,7 +105,6 @@ st.set_page_config(page_title="Brazil Rain Dashboard", layout="wide")
 st.title("🌧️ Brazil Precipitation Dashboard (7-day Rolling + Forecast)")
 
 city = st.selectbox("Select a city:", list(CITIES.keys()))
-
 lat, lon = CITIES[city]
 
 with st.spinner("Fetching hourly data..."):
@@ -121,7 +127,6 @@ df_fore = df[df["is_forecast"] == True]
 # ------------------------------------------------------------------
 fig = go.Figure()
 
-# Solid line for history
 fig.add_trace(
     go.Scatter(
         x=df_hist["time"],
@@ -132,7 +137,6 @@ fig.add_trace(
     )
 )
 
-# Dashed line for forecast
 fig.add_trace(
     go.Scatter(
         x=df_fore["time"],
@@ -182,5 +186,3 @@ else:
 # ------------------------------------------------------------------
 with st.expander("🛠 Debug: Raw hourly data returned by Open-Meteo"):
     st.dataframe(df, use_container_width=True)
-
-# ::contentReference[oaicite:0]{index=0}
