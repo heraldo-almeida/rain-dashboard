@@ -183,4 +183,4 @@ else:
 with st.expander("🛠 Debug: Raw hourly data returned by Open-Meteo"):
     st.dataframe(df, use_container_width=True)
 
-::contentReference[oaicite:0]{index=0}
+# ::contentReference[oaicite:0]{index=0}
