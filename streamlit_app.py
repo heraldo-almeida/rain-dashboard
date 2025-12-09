@@ -1,108 +1,124 @@
 import streamlit as st
-import requests
 import pandas as pd
-from datetime import datetime
+import requests
+from datetime import datetime, timedelta
 import pytz
+import plotly.graph_objects as go
 
-st.set_page_config(page_title="Brazil Weather Dashboard", layout="wide")
-
-# -----------------------------
-# Timezone (Brazil GMT-3)
-# -----------------------------
-BR_TZ = pytz.timezone("America/Sao_Paulo")
-
-# -----------------------------
-# Allowed Cities Only (with coordinates when provided)
-# -----------------------------
-cities = {
-    "Botucatu - SP": {"city": "Botucatu", "state": "SP", "lat": -22.8858, "lon": -48.4450},
-    "Campinas - SP": {"city": "Campinas", "state": "SP", "lat": -22.9056, "lon": -47.0608},
-    "Curitiba - PR": {"city": "Curitiba", "state": "PR"},
-    "Goiânia - GO": {"city": "Goiânia", "state": "GO"},
-    "Macapá - AP": {"city": "Macapá", "state": "AP"},
-    "Poços de Caldas - MG": {"city": "Poços de Caldas", "state": "MG", "lat": -21.7878, "lon": -46.5608},
-    "Porto Alegre - RS": {"city": "Porto Alegre", "state": "RS"},
-    "Recife - PE": {"city": "Recife", "state": "PE"},
-    "Rio de Janeiro - RJ": {"city": "Rio de Janeiro", "state": "RJ"},
-    "Salvador - BA": {"city": "Salvador", "state": "BA"},
-    "São Paulo - SP": {"city": "São Paulo", "state": "SP"},
-    "Vassouras - RJ": {"city": "Vassouras", "state": "RJ", "lat": -22.4039, "lon": -43.6628},
+# ------------------------------------------------------------------
+# CITY COORDINATES (12 cities, alphabetical order)
+# ------------------------------------------------------------------
+CITIES = {
+    "Botucatu": (-22.8858, -48.4450),
+    "Campinas": (-22.9058, -47.0608),
+    "Curitiba": (-25.4284, -49.2733),
+    "Goiânia": (-16.6864, -49.2643),
+    "Macapá": (0.0349, -51.0694),
+    "Poços de Caldas": (-21.7878, -46.5608),
+    "Porto Alegre": (-30.0346, -51.2177),
+    "Recife": (-8.0476, -34.8770),
+    "Rio de Janeiro": (-22.9068, -43.1729),
+    "Salvador": (-12.9777, -38.5016),
+    "São Paulo": (-23.5505, -46.6333),
+    "Vassouras": (-22.4039, -43.6628),
 }
 
-# -----------------------------
-# Sort cities alphabetically for the dropdown
-# -----------------------------
-sorted_city_names = sorted(cities.keys(), key=lambda x: x.lower())
+# ------------------------------------------------------------------
+# TIMEZONE
+# ------------------------------------------------------------------
+BR_TZ = pytz.timezone("America/Sao_Paulo")
 
-# -----------------------------
-# Select City
-# -----------------------------
-st.title("🌤️ Brazil Weather Dashboard")
-selected_city = st.selectbox("Select a city:", sorted_city_names)
+# ------------------------------------------------------------------
+# FETCH DATA FROM OPEN-METEO
+# ------------------------------------------------------------------
+def fetch_precip(lat, lon):
+    now = datetime.now(BR_TZ)
+    start = now - timedelta(days=7)
 
-city_data = cities[selected_city]
-city_name = city_data["city"]
+    start_str = start.strftime("%Y-%m-%dT%H:00")
+    end_str = (now + timedelta(days=2)).strftime("%Y-%m-%dT%H:00")  # Forecast
 
-# -----------------------------
-# Fetch Weather Data
-# -----------------------------
-API_URL = f"https://wttr.in/{city_name}?format=j1"
+    url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}"
+        "&hourly=precipitation"
+        f"&start_date={start_str[:10]}&end_date={end_str[:10]}"
+        "&timezone=America%2FSao_Paulo"
+    )
 
-try:
-    response = requests.get(API_URL)
-    response.raise_for_status()
-    weather_json = response.json()
-except Exception as e:
-    st.error(f"Could not fetch data: {e}")
-    st.stop()
+    r = requests.get(url)
+    data = r.json()
 
-# -----------------------------
-# Extract Current Conditions
-# -----------------------------
-current = weather_json["current_condition"][0]
+    hours = data["hourly"]["time"]
+    precip = data["hourly"]["precipitation"]
 
-temp = float(current["temp_C"])
-feels_like = float(current["FeelsLikeC"])
-humidity = float(current["humidity"])
-wind = float(current["windspeedKmph"])
-desc = current["weatherDesc"][0]["value"]
+    df = pd.DataFrame({"time": hours, "precip": precip})
+    df["time"] = pd.to_datetime(df["time"], utc=False).dt.tz_localize("America/Sao_Paulo")
+    df.sort_values("time", inplace=True)
 
-# Local time formatted 24h GMT-3
-now_br = datetime.now(BR_TZ).strftime("%d/%m/%Y %H:%M")
+    return df
 
-# -----------------------------
-# Extract Hourly Precipitation
-# -----------------------------
-today = weather_json["weather"][0]["hourly"]
-times = []
-precip = []
+# ------------------------------------------------------------------
+# APP UI
+# ------------------------------------------------------------------
+st.set_page_config(page_title="Brazil Rain Dashboard", layout="wide")
+st.title("🌧️ Brazil Precipitation Dashboard (7-day Rolling + Forecast)")
 
-for entry in today:
-    hour = str(entry["time"]).zfill(4)  # e.g., "300" -> "0300"
-    hour_fmt = f"{hour[:2]}:{hour[2:]}"
-    precip_mm = float(entry["precipMM"])  # rainfall
-    times.append(hour_fmt)
-    precip.append(precip_mm)
+city = st.selectbox("Select a city:", list(CITIES.keys()))
 
-df = pd.DataFrame({"Time": times, "Precipitation (mm)": precip})
+lat, lon = CITIES[city]
 
-# -----------------------------
-# Display Current Conditions (Card)
-# -----------------------------
-st.subheader(f"Weather in **{selected_city}**")
+with st.spinner("Fetching data..."):
+    df = fetch_precip(lat, lon)
 
-col1, col2, col3, col4 = st.columns(4)
+# ------------------------------------------------------------------
+# SPLIT HISTORICAL vs FORECAST
+# ------------------------------------------------------------------
+now = datetime.now(BR_TZ)
+df["is_forecast"] = df["time"] > now
 
-col1.metric("🌡️ Temperature", f"{temp} °C")
-col2.metric("🤔 Feels Like", f"{feels_like} °C")
-col3.metric("💧 Humidity", f"{humidity}%")
-col4.metric("💨 Wind", f"{wind} km/h")
+df_hist = df[df["is_forecast"] == False]
+df_fore = df[df["is_forecast"] == True]
 
-st.write(f"**Condition:** {desc}")
-st.write(f"⏰ **Local Time (GMT-3):** {now_br}")
+# ------------------------------------------------------------------
+# PLOT
+# ------------------------------------------------------------------
+fig = go.Figure()
 
-# -----------------------------
-# Plot Precipitation
-# -----------------------------
-st.subheader("🌧️ Precipitation Today (mm)")
-st.line_chart(df.set_index("Time"))
+# Solid line for history
+fig.add_trace(
+    go.Scatter(
+        x=df_hist["time"],
+        y=df_hist["precip"],
+        mode="lines",
+        name="Historical Precipitation",
+        line=dict(width=3),
+    )
+)
+
+# Dashed line for forecast
+fig.add_trace(
+    go.Scatter(
+        x=df_fore["time"],
+        y=df_fore["precip"],
+        mode="lines",
+        name="Forecast Precipitation",
+        line=dict(width=3, dash="dash"),
+    )
+)
+
+fig.update_layout(
+    title=f"Hourly Precipitation — {city}",
+    xaxis_title="Date / Time (UTC-3)",
+    yaxis_title="Precipitation (mm)",
+    hovermode="x unified",
+    template="plotly_white",
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+# ------------------------------------------------------------------
+# DEBUG TABLE
+# ------------------------------------------------------------------
+with st.expander("🛠 Debug: Raw hourly data returned by Open-Meteo"):
+    st.dataframe(df, use_container_width=True)
