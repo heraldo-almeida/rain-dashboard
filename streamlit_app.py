@@ -2,13 +2,14 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime, timedelta
+import pytz
 
 st.set_page_config(page_title="Brazil Rain Dashboard", layout="wide")
 
 st.title("🌧️ Rainfall Dashboard – Brazil State Capitals")
 
 # --------------------------------------------------------------------
-# 1. CAPITALS WITH COORDINATES (Open-Meteo works with lat/lon)
+# 1. CAPITALS WITH COORDINATES
 # --------------------------------------------------------------------
 capitals = {
     "Aracaju (SE)": (-10.9472, -37.0731),
@@ -41,21 +42,22 @@ capitals = {
 }
 
 city = st.selectbox("Select a capital:", list(capitals.keys()))
-
 lat, lon = capitals[city]
 
 # --------------------------------------------------------------------
 # 2. FETCH RAINFALL VIA OPEN-METEO
 # --------------------------------------------------------------------
-end = datetime.utcnow()
-start = end - timedelta(hours=24)
+br_tz = pytz.timezone("America/Sao_Paulo")
+
+end_utc = datetime.utcnow()
+start_utc = end_utc - timedelta(hours=24)
 
 url = (
     "https://api.open-meteo.com/v1/forecast?"
     f"latitude={lat}&longitude={lon}"
     "&hourly=precipitation"
-    f"&start_date={start.strftime('%Y-%m-%d')}"
-    f"&end_date={end.strftime('%Y-%m-%d')}"
+    f"&start_date={start_utc.strftime('%Y-%m-%d')}"
+    f"&end_date={end_utc.strftime('%Y-%m-%d')}"
 )
 
 try:
@@ -63,13 +65,20 @@ try:
     response.raise_for_status()
     data = response.json()
 
-    times = data["hourly"]["time"]
+    # Convert to datetime with timezone
+    times_utc = pd.to_datetime(data["hourly"]["time"], utc=True)
+    times_br = times_utc.tz_convert(br_tz)
+
     rain = data["hourly"]["precipitation"]
 
     df = pd.DataFrame({
-        "Time (UTC)": pd.to_datetime(times),
+        "Time (Brazil)": times_br,
         "Rainfall (mm)": rain
     })
+
+    # Create a formatted version ONLY for table display
+    df_display = df.copy()
+    df_display["Time (Brazil)"] = df_display["Time (Brazil)"].dt.strftime("%d/%m %H:%M")
 
     # ----------------------------------------------------------------
     # 3. DISPLAY RESULTS
@@ -78,9 +87,11 @@ try:
 
     st.metric("Total rainfall (mm)", f"{df['Rainfall (mm)'].sum():.2f}")
 
-    st.line_chart(df.set_index("Time (UTC)"))
+    # Chart MUST use real datetime, not strings
+    chart_df = df.set_index("Time (Brazil)")
+    st.line_chart(chart_df)
 
-    st.dataframe(df)
+    st.dataframe(df_display)
 
 except Exception as e:
     st.error(f"Could not fetch data: {e}")
