@@ -1,115 +1,124 @@
-from flask import Flask, render_template, Response
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import io
-import base64
+import streamlit as st
+import pandas as pd
+import requests
 from datetime import datetime, timedelta
-import random
+import pytz
+import plotly.graph_objects as go
 
-app = Flask(__name__)
+# ------------------------------------------------------------------
+# CITY COORDINATES (12 cities, alphabetical order)
+# ------------------------------------------------------------------
+CITIES = {
+    "Botucatu": (-22.8858, -48.4450),
+    "Campinas": (-22.9058, -47.0608),
+    "Curitiba": (-25.4284, -49.2733),
+    "Goiânia": (-16.6864, -49.2643),
+    "Macapá": (0.0349, -51.0694),
+    "Poços de Caldas": (-21.7878, -46.5608),
+    "Porto Alegre": (-30.0346, -51.2177),
+    "Recife": (-8.0476, -34.8770),
+    "Rio de Janeiro": (-22.9068, -43.1729),
+    "Salvador": (-12.9777, -38.5016),
+    "São Paulo": (-23.5505, -46.6333),
+    "Vassouras": (-22.4039, -43.6628),
+}
 
-# ---------------------------------------
-# Mock weather data generator
-# Replace this with your real sensor/API
-# ---------------------------------------
-def generate_weather_data(days=365):
-    data = []
-    today = datetime.now()
-    for i in range(days):
-        date = today - timedelta(days=i)
-        precipitation = max(0, random.gauss(3, 2))  # mm/day
-        data.append({
-            "date": date,
-            "precipitation": precipitation
-        })
-    return list(reversed(data))
+# ------------------------------------------------------------------
+# TIMEZONE
+# ------------------------------------------------------------------
+BR_TZ = pytz.timezone("America/Sao_Paulo")
 
-weather_data = generate_weather_data()
+# ------------------------------------------------------------------
+# FETCH DATA FROM OPEN-METEO
+# ------------------------------------------------------------------
+def fetch_precip(lat, lon):
+    now = datetime.now(BR_TZ)
+    start = now - timedelta(days=7)
 
-# ---------------------------------------
-# Rain Emoji Indicator
-# ---------------------------------------
-def rain_emoji(current_precip):
-    if current_precip == 0:
-        return "☀️ Not raining"
-    elif current_precip <= 2.5:
-        return "🌦️ Mild rain"
-    else:
-        return "🌧️ Strong rain"
+    start_str = start.strftime("%Y-%m-%dT%H:00")
+    end_str = (now + timedelta(days=2)).strftime("%Y-%m-%dT%H:00")  # Forecast
 
-# ---------------------------------------
-# Generate line plot (last 7 days)
-# ---------------------------------------
-def create_last7_plot():
-    last7 = weather_data[-7:]
-
-    dates = [d["date"].strftime("%b %d") for d in last7]
-    values = [d["precipitation"] for d in last7]
-
-    plt.figure(figsize=(5, 3))
-    plt.plot(dates, values, linewidth=2)
-    plt.title("Rainfall — Last 7 Days")
-    plt.xlabel("Date")
-    plt.ylabel("Precipitation (mm)")
-    plt.tight_layout()
-
-    img = io.BytesIO()
-    plt.savefig(img, format='png')
-    img.seek(0)
-    plt.close()
-    return base64.b64encode(img.getvalue()).decode()
-
-# ---------------------------------------
-# Generate bar plot (last 12 months)
-# ---------------------------------------
-def create_last12months_plot():
-    last12 = weather_data[-365:]
-
-    # aggregate monthly totals
-    monthly = {}
-    for entry in last12:
-        key = entry["date"].strftime("%Y-%m")
-        monthly[key] = monthly.get(key, 0) + entry["precipitation"]
-
-    months = list(monthly.keys())
-    totals = list(monthly.values())
-
-    plt.figure(figsize=(6, 3))
-    plt.bar(months, totals)
-    plt.xticks(rotation=45, ha='right')
-    plt.title("Precipitation — Last 12 Months")
-    plt.xlabel("Month")
-    plt.ylabel("Total Precipitation (mm)")
-    plt.tight_layout()
-
-    img = io.BytesIO()
-    plt.savefig(img, format='png')
-    img.seek(0)
-    plt.close()
-    return base64.b64encode(img.getvalue()).decode()
-
-# ---------------------------------------
-# Routes
-# ---------------------------------------
-@app.route("/")
-def index():
-    last7_img = create_last7_plot()
-    last12_img = create_last12months_plot()
-
-    current_precip = weather_data[-1]["precipitation"]
-    emoji = rain_emoji(current_precip)
-
-    return render_template(
-        "index.html",
-        last7_plot=last7_img,
-        last12_plot=last12_img,
-        emoji_status=emoji,
-        current_precip=round(current_precip, 2)
+    url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}"
+        "&hourly=precipitation"
+        f"&start_date={start_str[:10]}&end_date={end_str[:10]}"
+        "&timezone=America%2FSao_Paulo"
     )
 
-# ---------------------------------------
-# Run
-# ---------------------------------------
-if __name__ == "__main__":
-    app.run(debug=True)
+    r = requests.get(url)
+    data = r.json()
+
+    hours = data["hourly"]["time"]
+    precip = data["hourly"]["precipitation"]
+
+    df = pd.DataFrame({"time": hours, "precip": precip})
+    df["time"] = pd.to_datetime(df["time"], utc=False).dt.tz_localize("America/Sao_Paulo")
+    df.sort_values("time", inplace=True)
+
+    return df
+
+# ------------------------------------------------------------------
+# APP UI
+# ------------------------------------------------------------------
+st.set_page_config(page_title="Brazil Rain Dashboard", layout="wide")
+st.title("🌧️ Brazil Precipitation Dashboard (7-day Rolling + Forecast)")
+
+city = st.selectbox("Select a city:", list(CITIES.keys()))
+
+lat, lon = CITIES[city]
+
+with st.spinner("Fetching data..."):
+    df = fetch_precip(lat, lon)
+
+# ------------------------------------------------------------------
+# SPLIT HISTORICAL vs FORECAST
+# ------------------------------------------------------------------
+now = datetime.now(BR_TZ)
+df["is_forecast"] = df["time"] > now
+
+df_hist = df[df["is_forecast"] == False]
+df_fore = df[df["is_forecast"] == True]
+
+# ------------------------------------------------------------------
+# PLOT
+# ------------------------------------------------------------------
+fig = go.Figure()
+
+# Solid line for history
+fig.add_trace(
+    go.Scatter(
+        x=df_hist["time"],
+        y=df_hist["precip"],
+        mode="lines",
+        name="Historical Precipitation",
+        line=dict(width=3),
+    )
+)
+
+# Dashed line for forecast
+fig.add_trace(
+    go.Scatter(
+        x=df_fore["time"],
+        y=df_fore["precip"],
+        mode="lines",
+        name="Forecast Precipitation",
+        line=dict(width=3, dash="dash"),
+    )
+)
+
+fig.update_layout(
+    title=f"Hourly Precipitation — {city}",
+    xaxis_title="Date / Time (UTC-3)",
+    yaxis_title="Precipitation (mm)",
+    hovermode="x unified",
+    template="plotly_white",
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+# ------------------------------------------------------------------
+# DEBUG TABLE
+# ------------------------------------------------------------------
+with st.expander("🛠 Debug: Raw hourly data returned by Open-Meteo"):
+    st.dataframe(df, use_container_width=True)
