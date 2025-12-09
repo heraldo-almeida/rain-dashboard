@@ -77,22 +77,10 @@ with st.spinner("Loading hourly data..."):
 with st.spinner("Loading monthly data..."):
     df_monthly = get_monthly_precip(lat, lon)
 
-df_hourly["time"] = pd.to_datetime(df_hourly["time"], utc=True)
-df_hourly["time"] = df_hourly["time"].dt.tz_convert("America/Sao_Paulo").dt.tz_localize(None)
-df_hourly["ts"] = df_hourly["time"].astype("int64")
+df_hourly["time"] = pd.to_datetime(df_hourly["time"])
+df_hourly = df_hourly.sort_values("time")
 
-now_br = datetime.now(BR_TZ).replace(tzinfo=None)
-now_ts = pd.Timestamp(now_br).value
-
-hist_mask = df_hourly["ts"] <= now_ts
-df_hist = df_hourly[hist_mask]
-df_forecast = df_hourly[~hist_mask]
-
-if not df_hist.empty:
-    latest_precip = float(df_hist.iloc[-1]["precipitation"])
-else:
-    latest_precip = float(df_hourly.iloc[-1]["precipitation"])
-
+latest_precip = float(df_hourly.iloc[-1]["precipitation"])
 status = rain_emoji(latest_precip)
 
 st.subheader(f"{city} — Current rain status: {status}")
@@ -101,27 +89,16 @@ st.caption(
 )
 
 fig_hourly = go.Figure()
-if not df_hist.empty:
-    fig_hourly.add_trace(
-        go.Scatter(
-            x=df_hist["time"],
-            y=df_hist["precipitation"],
-            mode="lines",
-            name="History",
-        )
+fig_hourly.add_trace(
+    go.Scatter(
+        x=df_hourly["time"],
+        y=df_hourly["precipitation"],
+        mode="lines",
+        name="Precipitation",
     )
-if not df_forecast.empty:
-    fig_hourly.add_trace(
-        go.Scatter(
-            x=df_forecast["time"],
-            y=df_forecast["precipitation"],
-            mode="lines",
-            name="Forecast",
-            line=dict(dash="dash"),
-        )
-    )
+)
 fig_hourly.update_layout(
-    title="Hourly Precipitation – Last 7 Days",
+    title="Hourly Precipitation – Last 7 Days (plus forecast)",
     xaxis_title="Time (America/Sao_Paulo)",
     yaxis_title="mm",
     hovermode="x unified",
