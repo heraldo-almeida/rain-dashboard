@@ -13,6 +13,7 @@ BR_TZ = pytz.timezone("America/Sao_Paulo")
 st.set_page_config(page_title="Brazil Precipitation Dashboard", layout="wide")
 st.title("🌧️ Brazil Precipitation Dashboard")
 
+
 # =========================================================
 # CITY LIST (12 CITIES, ALPHABETICAL)
 # =========================================================
@@ -37,7 +38,6 @@ CITY_NAMES = sorted(CITIES.keys())
 # HELPERS
 # =========================================================
 def rain_emoji(value: float) -> str:
-    """Three-stage emoji based on latest precipitation in mm/hour."""
     if value <= 0:
         return "☀️ Not raining"
     elif value <= 2:
@@ -48,26 +48,20 @@ def rain_emoji(value: float) -> str:
 
 @st.cache_data(show_spinner=False)
 def get_hourly_precip(lat: float, lon: float) -> pd.DataFrame:
-    """7 past days + 2 future days hourly precipitation for a point."""
     url = (
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}"
         "&hourly=precipitation&past_days=7&forecast_days=2"
         "&timezone=America%2FSao_Paulo"
     )
-    data = requests.get(url, timeout=20).json()
+    data = requests.get(url, timeout=25).json()
     df = pd.DataFrame(data["hourly"])
-    # Open-Meteo already returns local time; parse as naive datetime
     df["time"] = pd.to_datetime(df["time"])
     return df
 
 
 @st.cache_data(show_spinner=False)
 def get_monthly_precip(lat: float, lon: float) -> pd.DataFrame:
-    """
-    Last 12 months total precipitation using the climate API.
-    We ask for ~2 years and keep the last 12 monthly values.
-    """
     now = datetime.utcnow()
     end_date = now.date()
     start_date = (now - timedelta(days=730)).date()
@@ -78,7 +72,7 @@ def get_monthly_precip(lat: float, lon: float) -> pd.DataFrame:
         f"&start_date={start_date}&end_date={end_date}"
         "&monthly=precipitation_sum"
     )
-    data = requests.get(url, timeout=20).json()
+    data = requests.get(url, timeout=25).json()
 
     if "monthly" not in data:
         return pd.DataFrame(columns=["month", "precip"])
@@ -99,20 +93,42 @@ def get_monthly_precip(lat: float, lon: float) -> pd.DataFrame:
 city = st.selectbox("Select city", CITY_NAMES)
 lat, lon = CITIES[city]
 
+
+# =========================================================
+# LOAD DATA
+# =========================================================
 with st.spinner("Loading hourly data..."):
     df_hourly = get_hourly_precip(lat, lon)
 
 with st.spinner("Loading monthly data..."):
     df_monthly = get_monthly_precip(lat, lon)
 
-# ---- Fix timezone comparison: keep everything as naive local time ----
-now_br_aware = datetime.now(BR_TZ)
-now_br = now_br_aware.replace(tzinfo=None)  # naive local datetime
 
+# =========================================================
+# FIX TIMEZONE COMPARISON
+# =========================================================
+# Convert times to timezone-aware Brazil, then back to naive local
+df_hourly["time"] = (
+    pd.to_datetime(df_hourly["time"], utc=True)
+    .dt.tz_convert("America/Sao_Paulo")
+    .dt.tz_localize(None)
+)
+
+# current local time, naive
+now_br = datetime.now(BR_TZ).replace(tzinfo=None)
+
+
+# =========================================================
+# SPLIT HISTORY / FORECAST
+# =========================================================
 hist_mask = df_hourly["time"] <= now_br
 df_hist = df_hourly[hist_mask]
 df_forecast = df_hourly[~hist_mask]
 
+
+# =========================================================
+# CURRENT PRECIP + EMOJI
+# =========================================================
 if not df_hist.empty:
     latest_precip = float(df_hist.iloc[-1]["precipitation"])
 else:
@@ -122,9 +138,9 @@ status = rain_emoji(latest_precip)
 
 st.subheader(f"{city} — Current rain status: {status}")
 st.caption(
-    f"Last observed hourly precipitation: {latest_precip:.2f} mm "
-    f"(local time {now_br_aware.strftime('%d/%m/%Y %H:%M')} BRT)"
+    f"Last observed hourly precipitation: {latest_precip:.2f} mm"
 )
+
 
 # =========================================================
 # HOURLY LINE CHART (7 DAYS + FORECAST DASHED)
@@ -153,15 +169,16 @@ if not df_forecast.empty:
     )
 
 fig_hourly.update_layout(
-    title="Hourly Precipitation – Last 7 Days (History + Forecast)",
+    title="Hourly Precipitation – Last 7 Days",
     xaxis_title="Time (America/Sao_Paulo)",
     yaxis_title="mm",
     hovermode="x unified",
 )
 st.plotly_chart(fig_hourly, use_container_width=True)
 
+
 # =========================================================
-# 12-MONTH BAR CHART
+# MONTHLY BAR CHART (12 MONTHS)
 # =========================================================
 st.subheader("Last 12 Months – Total Monthly Precipitation")
 
@@ -176,6 +193,7 @@ else:
         hovermode="x unified",
     )
     st.plotly_chart(fig_month, use_container_width=True)
+
 
 # =========================================================
 # OPTIONAL DEBUG TABLE
