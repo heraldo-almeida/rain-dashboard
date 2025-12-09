@@ -1,4 +1,5 @@
-streamlit>=1.25
+streamlit
 pandas
 requests
-python-dateutil
+plotly
+pytz
