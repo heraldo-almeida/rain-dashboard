@@ -79,11 +79,9 @@ with st.spinner("Loading monthly data..."):
 
 df_hourly["time"] = pd.to_datetime(df_hourly["time"], utc=True)
 df_hourly["time"] = df_hourly["time"].dt.tz_convert("America/Sao_Paulo").dt.tz_localize(None)
-
-now_br_aware = datetime.now(BR_TZ)
-now_br = now_br_aware.replace(tzinfo=None)
-
 df_hourly["ts"] = df_hourly["time"].astype("int64")
+
+now_br = datetime.now(BR_TZ).replace(tzinfo=None)
 now_ts = pd.Timestamp(now_br).value
 
 hist_mask = df_hourly["ts"] <= now_ts
@@ -99,8 +97,7 @@ status = rain_emoji(latest_precip)
 
 st.subheader(f"{city} — Current rain status: {status}")
 st.caption(
-    f"Last observed hourly precipitation: {latest_precip:.2f} mm "
-    f"(local time {now_br_aware.strftime('%d/%m/%Y %H:%M')} BRT)"
+    f"Last observed hourly precipitation: {latest_precip:.2f} mm"
 )
 
 fig_hourly = go.Figure()
