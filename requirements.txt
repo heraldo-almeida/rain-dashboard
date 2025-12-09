@@ -3,3 +3,10 @@ pandas
 requests
 plotly
 pytz
+
+geopandas
+matplotlib
+shapely
+pyproj
+fiona
+rtree
