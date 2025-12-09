@@ -29,9 +29,10 @@ CITIES = {
 BR_TZ = pytz.timezone("America/Sao_Paulo")
 
 # ------------------------------------------------------------------
-# FETCH HOURLY DATA FROM OPEN-METEO (7 days + forecast)
+# HELPERS
 # ------------------------------------------------------------------
 def fetch_precip(lat, lon):
+    """Fetch hourly precipitation for last 7 days + 2-day forecast."""
     now = datetime.now(BR_TZ)
     start = now - timedelta(days=7)
 
@@ -58,10 +59,9 @@ def fetch_precip(lat, lon):
 
     return df
 
-# ------------------------------------------------------------------
-# FETCH MONTHLY DATA (LAST 12 MONTHS) FROM ARCHIVE API (ERA5)
-# ------------------------------------------------------------------
+
 def fetch_monthly_precip(lat, lon):
+    """Fetch last 12 months of daily precip from ERA5 and aggregate by month."""
     today = datetime.utcnow().date()
     start = today - timedelta(days=365)
 
@@ -98,6 +98,17 @@ def fetch_monthly_precip(lat, lon):
     monthly.rename(columns={"month": "month", "precip": "precip"}, inplace=True)
     return monthly
 
+
+def rain_status(precip_mm: float):
+    """Return emoji + label based on 2 mm threshold for heavy rain."""
+    if precip_mm <= 0:
+        return "☀️", "Not raining"
+    elif precip_mm <= 2:
+        return "🌦️", "Mild rain"
+    else:
+        return "⛈️", "Heavy rain"
+
+
 # ------------------------------------------------------------------
 # APP UI
 # ------------------------------------------------------------------
@@ -121,6 +132,28 @@ df["is_forecast"] = df["time"] > now
 
 df_hist = df[df["is_forecast"] == False]
 df_fore = df[df["is_forecast"] == True]
+
+# ------------------------------------------------------------------
+# CURRENT STATUS CARD (2 mm threshold)
+# ------------------------------------------------------------------
+if not df_hist.empty:
+    latest_row = df_hist.iloc[-1]
+else:
+    latest_row = df.iloc[-1]
+
+latest_precip = float(latest_row["precip"])
+latest_time = latest_row["time"].astimezone(BR_TZ)
+
+emoji, label = rain_status(latest_precip)
+
+with st.container():
+    st.markdown(
+        f"""
+        ### {emoji} Current Rain Status — {city}  
+        **{label}** · Last hour: **{latest_precip:.2f} mm**  
+        _Time: {latest_time.strftime('%d/%m/%Y %H:%M')} (BRT)_
+        """
+    )
 
 # ------------------------------------------------------------------
 # HOURLY PLOT
