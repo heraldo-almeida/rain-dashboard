@@ -47,8 +47,6 @@ lat, lon = capitals[city]
 # --------------------------------------------------------------------
 # 2. FETCH RAINFALL VIA OPEN-METEO
 # --------------------------------------------------------------------
-br_tz = pytz.timezone("America/Sao_Paulo")
-
 end_utc = datetime.utcnow()
 start_utc = end_utc - timedelta(hours=24)
 
@@ -65,9 +63,9 @@ try:
     response.raise_for_status()
     data = response.json()
 
-    # Convert to datetime with timezone
+    # Convert UTC → Brazil, then remove timezone so Streamlit doesn't shift
     times_utc = pd.to_datetime(data["hourly"]["time"], utc=True)
-    times_br = times_utc.tz_convert(br_tz)
+    times_br = times_utc.tz_convert("America/Sao_Paulo").tz_localize(None)
 
     rain = data["hourly"]["precipitation"]
 
@@ -76,7 +74,7 @@ try:
         "Rainfall (mm)": rain
     })
 
-    # Create a formatted version ONLY for table display
+    # Table-friendly format
     df_display = df.copy()
     df_display["Time (Brazil)"] = df_display["Time (Brazil)"].dt.strftime("%d/%m %H:%M")
 
@@ -87,7 +85,7 @@ try:
 
     st.metric("Total rainfall (mm)", f"{df['Rainfall (mm)'].sum():.2f}")
 
-    # Chart MUST use real datetime, not strings
+    # Chart uses CLEAN datetimes with no timezone
     chart_df = df.set_index("Time (Brazil)")
     st.line_chart(chart_df)
 
