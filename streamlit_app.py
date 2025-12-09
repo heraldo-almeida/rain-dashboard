@@ -1,95 +1,86 @@
 import streamlit as st
 import pandas as pd
+import altair as alt
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
-st.set_page_config(page_title="Brazil Rain Dashboard", layout="wide")
+st.set_page_config(page_title="Brazil Rainfall Dashboard", layout="wide")
 
-st.title("🌧️ Rainfall Dashboard – Brazil State Capitals")
+st.title("Rainfall in Brazilian Capitals (INMET)")
 
-# --------------------------------------------------------------------
-# 1. CAPITALS WITH COORDINATES
-# --------------------------------------------------------------------
+# --- Brazilian timezone ---
+tz_br = pytz.timezone("America/Sao_Paulo")
+now_br = datetime.now(tz_br)
+
+st.write(f"Current time in Brazil: **{now_br.strftime('%d/%m/%Y %H:%M')}**")
+
+
+# --- State capitals and IDs ---
 capitals = {
-    "Aracaju (SE)": (-10.9472, -37.0731),
-    "Belém (PA)": (-1.4558, -48.5039),
-    "Belo Horizonte (MG)": (-19.9167, -43.9345),
-    "Boa Vista (RR)": (2.8235, -60.6758),
-    "Brasília (DF)": (-15.7939, -47.8828),
-    "Campo Grande (MS)": (-20.4697, -54.6200),
-    "Cuiabá (MT)": (-15.6010, -56.0974),
-    "Curitiba (PR)": (-25.4284, -49.2733),
-    "Florianópolis (SC)": (-27.5945, -48.5477),
-    "Fortaleza (CE)": (-3.7319, -38.5267),
-    "Goiânia (GO)": (-16.6864, -49.2643),
-    "João Pessoa (PB)": (-7.1195, -34.8450),
-    "Macapá (AP)": (0.0349, -51.0694),
-    "Maceió (AL)": (-9.6499, -35.7089),
-    "Manaus (AM)": (-3.1190, -60.0217),
-    "Natal (RN)": (-5.7950, -35.2094),
-    "Palmas (TO)": (-10.2491, -48.3243),
-    "Porto Alegre (RS)": (-30.0346, -51.2177),
-    "Porto Velho (RO)": (-8.7612, -63.9004),
-    "Recife (PE)": (-8.0476, -34.8770),
-    "Rio Branco (AC)": (-9.9740, -67.8243),
-    "Rio de Janeiro (RJ)": (-22.9068, -43.1729),
-    "Salvador (BA)": (-12.9777, -38.5016),
-    "São Luís (MA)": (-2.5390, -44.2825),
-    "São Paulo (SP)": (-23.5505, -46.6333),
-    "Teresina (PI)": (-5.0892, -42.8016),
-    "Vitória (ES)": (-20.3155, -40.3128)
+    "Rio de Janeiro": "A652",
+    "São Paulo": "A701",
+    "Belo Horizonte": "A507",
+    "Brasília": "A001",
+    "Salvador": "A402",
+    "Curitiba": "A807",
+    "Fortaleza": "A304",
+    "Manaus": "A101",
+    "Porto Alegre": "A803",
+    "Recife": "A301",
 }
 
-city = st.selectbox("Select a capital:", list(capitals.keys()))
-lat, lon = capitals[city]
+city = st.selectbox("Select a capital city:", list(capitals.keys()))
+station_id = capitals[city]
 
-# --------------------------------------------------------------------
-# 2. FETCH RAINFALL VIA OPEN-METEO
-# --------------------------------------------------------------------
-end_utc = datetime.utcnow()
-start_utc = end_utc - timedelta(hours=24)
+url = f"https://apitempo.inmet.gov.br/estacao/{now_br.year}-{now_br.month:02d}-{now_br.day:02d}"
 
-url = (
-    "https://api.open-meteo.com/v1/forecast?"
-    f"latitude={lat}&longitude={lon}"
-    "&hourly=precipitation"
-    f"&start_date={start_utc.strftime('%Y-%m-%d')}"
-    f"&end_date={end_utc.strftime('%Y-%m-%d')}"
-)
-
+# --- Fetch data ---
 try:
     response = requests.get(url, timeout=10)
-    response.raise_for_status()
     data = response.json()
+except Exception:
+    st.error("Could not fetch data.")
+    st.stop()
 
-    # Convert UTC → Brazil, then remove timezone so Streamlit doesn't shift
-    times_utc = pd.to_datetime(data["hourly"]["time"], utc=True)
-    times_br = times_utc.tz_convert("America/Sao_Paulo").tz_localize(None)
+# --- Filter only the selected station ---
+df = pd.DataFrame([x for x in data if x["CD_ESTACAO"] == station_id])
 
-    rain = data["hourly"]["precipitation"]
+if df.empty:
+    st.warning("No data available for this station today.")
+    st.stop()
 
-    df = pd.DataFrame({
-        "Time (Brazil)": times_br,
-        "Rainfall (mm)": rain
-    })
+# --- Clean datetime ---
+df["datetime"] = pd.to_datetime(df["DT_MEDICAO"] + " " + df["HR_MEDICAO"])
+df["datetime"] = df["datetime"].dt.tz_localize("UTC").dt.tz_convert(tz_br)
 
-    # Table-friendly format
-    df_display = df.copy()
-    df_display["Time (Brazil)"] = df_display["Time (Brazil)"].dt.strftime("%d/%m %H:%M")
+# --- Rainfall column ---
+df["rain_mm"] = pd.to_numeric(df["CHUVA"], errors="coerce").fillna(0)
 
-    # ----------------------------------------------------------------
-    # 3. DISPLAY RESULTS
-    # ----------------------------------------------------------------
-    st.subheader(f"Rainfall in the last 24 hours – {city}")
+# Sort chronologically
+df = df.sort_values("datetime")
 
-    st.metric("Total rainfall (mm)", f"{df['Rainfall (mm)'].sum():.2f}")
+# --- 24h TIME column for table ---
+df["Time (Brazil)"] = df["datetime"].dt.strftime("%d/%m %H:%M")
 
-    # Chart uses CLEAN datetimes with no timezone
-    chart_df = df.set_index("Time (Brazil)")
-    st.line_chart(chart_df)
+# --- Chart ---
+chart = (
+    alt.Chart(df)
+    .mark_line(point=True)
+    .encode(
+        x=alt.X("datetime:T",
+                title="Time (Brazil)",
+                axis=alt.Axis(format="%H:%M")),  # 24h format
+        y=alt.Y("rain_mm:Q", title="Rainfall (mm)"),
+        tooltip=[
+            alt.Tooltip("datetime:T", title="Time (Brazil)", format="%H:%M"),
+            alt.Tooltip("rain_mm:Q", title="Rain (mm)")
+        ]
+    )
+    .properties(height=350)
+)
 
-    st.dataframe(df_display)
+st.altair_chart(chart, use_container_width=True)
 
-except Exception as e:
-    st.error(f"Could not fetch data: {e}")
+# Table view
+st.dataframe(df[["Time (Brazil)", "rain_mm"]].rename(columns={"rain_mm": "Rainfall (mm)"}))
