@@ -5,6 +5,14 @@ from datetime import datetime, timedelta
 import pytz
 import plotly.graph_objects as go
 
+from company_branding import (
+    PRIMARY_LOGO_PATH,
+    SECONDARY_LOGO_PATH,
+    COMPANY_NAME,
+    PRODUCT_NAME,
+    TAGLINE,
+)
+
 # ------------------------------------------------------------------
 # CITY COORDINATES (12 cities, alphabetical order)
 # ------------------------------------------------------------------
@@ -108,12 +116,36 @@ def rain_status(precip_mm: float):
     else:
         return "⛈️", "Heavy rain"
 
-
 # ------------------------------------------------------------------
 # APP UI
 # ------------------------------------------------------------------
 st.set_page_config(page_title="Brazil Rain Dashboard", layout="wide")
-st.title("🌧️ Brazil Precipitation Dashboard (7-day Rolling + Forecast)")
+
+# --- Branded header with logos ---
+col_left, col_center, col_right = st.columns([1, 2, 1])
+
+with col_left:
+    st.image(PRIMARY_LOGO_PATH, use_column_width="auto")
+
+with col_center:
+    st.markdown(
+        f"""
+        <div style="text-align:center;">
+            <h1 style="margin-bottom:0;">{PRODUCT_NAME}</h1>
+            <p style="margin-top:4px; font-size:16px; color: #555;">
+                {COMPANY_NAME} — {TAGLINE}
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with col_right:
+    st.image(SECONDARY_LOGO_PATH, use_column_width="auto")
+
+st.markdown("---")
+
+st.title(" ")
 
 city = st.selectbox("Select a city:", list(CITIES.keys()))
 lat, lon = CITIES[city]
@@ -146,14 +178,26 @@ latest_time = latest_row["time"].astimezone(BR_TZ)
 
 emoji, label = rain_status(latest_precip)
 
-with st.container():
-    st.markdown(
-        f"""
-        ### {emoji} Current Rain Status — {city}  
-        **{label}** · Last hour: **{latest_precip:.2f} mm**  
-        _Time: {latest_time.strftime('%d/%m/%Y %H:%M')} (BRT)_
-        """
-    )
+st.markdown(
+    f"""
+    <div style="
+        padding: 16px 24px;
+        border-radius: 12px;
+        border: 1px solid #e0e0e0;
+        background-color: #f9fafb;
+        margin-bottom: 16px;
+    ">
+        <h3 style="margin: 0 0 8px 0;">{emoji} Current Rain Status — {city}</h3>
+        <p style="margin: 0 0 4px 0; font-size: 15px;">
+            <strong>{label}</strong> · Last hour: <strong>{latest_precip:.2f} mm</strong>
+        </p>
+        <p style="margin: 0; font-size: 13px; color: #666;">
+            Time: {latest_time.strftime('%d/%m/%Y %H:%M')} (BRT)
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ------------------------------------------------------------------
 # HOURLY PLOT
