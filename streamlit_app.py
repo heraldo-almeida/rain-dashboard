@@ -5,6 +5,14 @@ from datetime import datetime, timedelta
 import pytz
 import plotly.graph_objects as go
 
+from company_branding import (
+    PRIMARY_LOGO_PATH,
+    SECONDARY_LOGO_PATH,
+    COMPANY_NAME,
+    PRODUCT_NAME,
+    TAGLINE,
+)
+
 # ------------------------------------------------------------------
 # CITY COORDINATES (12 cities, alphabetical order)
 # ------------------------------------------------------------------
@@ -29,9 +37,10 @@ CITIES = {
 BR_TZ = pytz.timezone("America/Sao_Paulo")
 
 # ------------------------------------------------------------------
-# FETCH DATA FROM OPEN-METEO
+# HELPERS
 # ------------------------------------------------------------------
 def fetch_precip(lat, lon):
+    """Fetch hourly precipitation for last 7 days + 2-day forecast."""
     now = datetime.now(BR_TZ)
     start = now - timedelta(days=7)
 
@@ -58,18 +67,94 @@ def fetch_precip(lat, lon):
 
     return df
 
+
+def fetch_monthly_precip(lat, lon):
+    """Fetch last 12 months of daily precip from ERA5 and aggregate by month."""
+    today = datetime.utcnow().date()
+    start = today - timedelta(days=365)
+
+    url = (
+        "https://archive-api.open-meteo.com/v1/era5"
+        f"?latitude={lat}&longitude={lon}"
+        f"&start_date={start}&end_date={today}"
+        "&daily=precipitation_sum"
+        "&timezone=America%2FSao_Paulo"
+    )
+
+    r = requests.get(url)
+    data = r.json()
+
+    if "daily" not in data:
+        return pd.DataFrame(columns=["month", "precip"])
+
+    dates = data["daily"].get("time", [])
+    precip = data["daily"].get("precipitation_sum", [])
+
+    if not dates:
+        return pd.DataFrame(columns=["month", "precip"])
+
+    df = pd.DataFrame({"date": dates, "precip": precip})
+    df["date"] = pd.to_datetime(df["date"])
+    df["month"] = df["date"].dt.to_period("M").dt.to_timestamp()
+
+    monthly = (
+        df.groupby("month", as_index=False)["precip"]
+        .sum()
+        .sort_values("month")
+        .tail(12)
+    )
+    monthly.rename(columns={"month": "month", "precip": "precip"}, inplace=True)
+    return monthly
+
+
+def rain_status(precip_mm: float):
+    """Return emoji + label based on 2 mm threshold for heavy rain."""
+    if precip_mm <= 0:
+        return "☀️", "Not raining"
+    elif precip_mm <= 2:
+        return "🌦️", "Mild rain"
+    else:
+        return "⛈️", "Heavy rain"
+
 # ------------------------------------------------------------------
 # APP UI
 # ------------------------------------------------------------------
 st.set_page_config(page_title="Brazil Rain Dashboard", layout="wide")
-st.title("🌧️ Brazil Precipitation Dashboard (7-day Rolling + Forecast)")
+
+# --- Branded header with logos ---
+col_left, col_center, col_right = st.columns([1, 2, 1])
+
+with col_left:
+    st.image(PRIMARY_LOGO_PATH, use_column_width="auto")
+
+with col_center:
+    st.markdown(
+        f"""
+        <div style="text-align:center;">
+            <h1 style="margin-bottom:0;">{PRODUCT_NAME}</h1>
+            <p style="margin-top:4px; font-size:16px; color: #555;">
+                {COMPANY_NAME} — {TAGLINE}
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with col_right:
+    st.image(SECONDARY_LOGO_PATH, use_column_width="auto")
+
+st.markdown("---")
+
+st.title(" ")
 
 city = st.selectbox("Select a city:", list(CITIES.keys()))
-
 lat, lon = CITIES[city]
 
-with st.spinner("Fetching data..."):
+with st.spinner("Fetching hourly data..."):
     df = fetch_precip(lat, lon)
+
+with st.spinner("Fetching monthly data (last 12 months)..."):
+    df_monthly = fetch_monthly_precip(lat, lon)
 
 # ------------------------------------------------------------------
 # SPLIT HISTORICAL vs FORECAST
@@ -81,11 +166,44 @@ df_hist = df[df["is_forecast"] == False]
 df_fore = df[df["is_forecast"] == True]
 
 # ------------------------------------------------------------------
-# PLOT
+# CURRENT STATUS CARD (2 mm threshold)
+# ------------------------------------------------------------------
+if not df_hist.empty:
+    latest_row = df_hist.iloc[-1]
+else:
+    latest_row = df.iloc[-1]
+
+latest_precip = float(latest_row["precip"])
+latest_time = latest_row["time"].astimezone(BR_TZ)
+
+emoji, label = rain_status(latest_precip)
+
+st.markdown(
+    f"""
+    <div style="
+        padding: 16px 24px;
+        border-radius: 12px;
+        border: 1px solid #e0e0e0;
+        background-color: #f9fafb;
+        margin-bottom: 16px;
+    ">
+        <h3 style="margin: 0 0 8px 0;">{emoji} Current Rain Status — {city}</h3>
+        <p style="margin: 0 0 4px 0; font-size: 15px;">
+            <strong>{label}</strong> · Last hour: <strong>{latest_precip:.2f} mm</strong>
+        </p>
+        <p style="margin: 0; font-size: 13px; color: #666;">
+            Time: {latest_time.strftime('%d/%m/%Y %H:%M')} (BRT)
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ------------------------------------------------------------------
+# HOURLY PLOT
 # ------------------------------------------------------------------
 fig = go.Figure()
 
-# Solid line for history
 fig.add_trace(
     go.Scatter(
         x=df_hist["time"],
@@ -96,7 +214,6 @@ fig.add_trace(
     )
 )
 
-# Dashed line for forecast
 fig.add_trace(
     go.Scatter(
         x=df_fore["time"],
@@ -118,7 +235,31 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 # ------------------------------------------------------------------
+# MONTHLY BAR PLOT (LAST 12 MONTHS)
+# ------------------------------------------------------------------
+st.subheader("📊 Total Monthly Precipitation — Last 12 Months")
+
+if df_monthly.empty:
+    st.info("No monthly precipitation data available for this location.")
+else:
+    fig_month = go.Figure()
+    fig_month.add_trace(
+        go.Bar(
+            x=df_monthly["month"],
+            y=df_monthly["precip"],
+            name="Monthly total",
+        )
+    )
+    fig_month.update_layout(
+        xaxis_title="Month",
+        yaxis_title="Precipitation (mm)",
+        hovermode="x unified",
+        template="plotly_white",
+    )
+    st.plotly_chart(fig_month, use_container_width=True)
+
+# ------------------------------------------------------------------
 # DEBUG TABLE
 # ------------------------------------------------------------------
-with st.expander("🛠 Debug: Raw hourly data returned by Open-Meteo"):
-    st.dataframe(df, use_container_width=True)
+# with st.expander("🛠 Debug: Raw hourly data returned by Open-Meteo"):
+#     st.dataframe(df, use_container_width=True)
