@@ -24,7 +24,7 @@ import base64
 # ---------------------------------------------------------
 
 # Background image (URL or local file – both supported)
-BACKGROUND_IMAGE = "https://images.unsplash.com/photo-1504384308090-c894fdcc538d"
+BACKGROUND_IMAGE = "bg.jpg"
 
 # # Two company logos (replace with your actual paths)
 # LOGO_PRIMARY = "https://upload.wikimedia.org/wikipedia/commons/a/ab/Logo_TV_2015.png"
