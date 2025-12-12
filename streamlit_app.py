@@ -4,16 +4,18 @@ import requests
 from datetime import datetime, timedelta
 import pytz
 import plotly.graph_objects as go
+import os
+import time
 
-# -------------------------
-# Config
-# -------------------------
+# ------------------------------------------------------------------
+# CONFIG
+# ------------------------------------------------------------------
 BR_TZ = pytz.timezone("America/Sao_Paulo")
 st.set_page_config(page_title="Brazil Rain Dashboard", layout="wide")
 
-# -------------------------
-# Cities
-# -------------------------
+# ------------------------------------------------------------------
+# CITY COORDINATES (alphabetical order)
+# ------------------------------------------------------------------
 CITIES = {
     "Botucatu": (-22.8858, -48.4450),
     "Campinas": (-22.9058, -47.0608),
@@ -29,56 +31,43 @@ CITIES = {
     "Vassouras": (-22.4039, -43.6628),
 }
 
-# -------------------------
-# Helpers
-# -------------------------
+# ------------------------------------------------------------------
+# SAFE REQUEST WRAPPER
+# ------------------------------------------------------------------
 def safe_request_json(url: str, timeout: int = 25):
     try:
-        r = requests.get(url, timeout=timeout)
+        resp = requests.get(url, timeout=timeout)
+        return resp.json()
     except Exception as e:
-        return {"__error__": f"Request failed: {e}"}
-    try:
-        return r.json()
-    except Exception as e:
-        return {"__error__": f"Invalid JSON response: {e}", "text": r.text if hasattr(r, "text") else None}
+        return {"__error__": str(e)}
 
-
-def ensure_brt_timezone(series: pd.Series) -> pd.Series:
-    s = pd.to_datetime(series, errors="coerce")
-    # if series parsing failed, return it as-is
-    if s.isna().all():
-        return s
-    # If dtype is timezone-aware, convert; otherwise localize to America/Sao_Paulo
-    try:
-        if s.dt.tz is None:
-            s = s.dt.tz_localize("America/Sao_Paulo")
-        else:
-            s = s.dt.tz_convert("America/Sao_Paulo")
-    except Exception:
-        # fallback: coerce to naive then localize
-        s = pd.to_datetime(series, errors="coerce").dt.tz_localize("America/Sao_Paulo")
-    return s
-
-
-def fetch_precip(lat: float, lon: float) -> pd.DataFrame:
+# ------------------------------------------------------------------
+# HOURLY PRECIP FETCH
+# ------------------------------------------------------------------
+def fetch_precip(lat: float, lon: float, city_name: str) -> pd.DataFrame:
     now = datetime.now(BR_TZ)
     start = now - timedelta(days=7)
+    start_date = start.strftime("%Y-%m-%d")
+    end_date = (now + timedelta(days=2)).strftime("%Y-%m-%d")
 
     url = (
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}"
         "&hourly=precipitation"
-        f"&start_date={start.strftime('%Y-%m-%d')}&end_date={(now + timedelta(days=2)).strftime('%Y-%m-%d')}"
+        f"&start_date={start_date}&end_date={end_date}"
         "&timezone=America%2FSao_Paulo"
     )
 
     data = safe_request_json(url)
-    if "__error__" in data:
-        st.error(f"Error fetching hourly data: {data['__error__']}")
+
+    # Explicit API limit case
+    if isinstance(data, dict) and data.get("error") is True:
+        st.warning(f"Open-Meteo error: {data.get('reason')}")
         return pd.DataFrame(columns=["time", "precip"])
 
-    if "hourly" not in data or "time" not in data["hourly"] or "precipitation" not in data["hourly"]:
-        st.error("Open-Meteo response missing 'hourly' payload. Full response shown in debug.")
+    # Missing hourly block
+    if "hourly" not in data:
+        st.error("Open-Meteo response missing 'hourly' payload. See debug below.")
         st.json(data)
         return pd.DataFrame(columns=["time", "precip"])
 
@@ -86,12 +75,32 @@ def fetch_precip(lat: float, lon: float) -> pd.DataFrame:
     precip = data["hourly"]["precipitation"]
 
     df = pd.DataFrame({"time": hours, "precip": precip})
-    df["time"] = ensure_brt_timezone(df["time"])
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+
+    # Convert to timezone-aware BRT if naive
+    try:
+        if df["time"].dt.tz is None:
+            df["time"] = df["time"].dt.tz_localize("America/Sao_Paulo")
+        else:
+            df["time"] = df["time"].dt.tz_convert("America/Sao_Paulo")
+    except Exception:
+        df["time"] = pd.to_datetime(df["time"], errors="coerce")
+        df["time"] = df["time"].dt.tz_localize("America/Sao_Paulo")
+
     df = df.sort_values("time").reset_index(drop=True)
     return df
 
+# ------------------------------------------------------------------
+# HOURLY CACHE: Only refreshes once per hour
+# ------------------------------------------------------------------
+@st.cache_data(ttl=3600)  # CACHE FOR 1 HOUR
+def fetch_precip_cached(lat: float, lon: float, city_name: str):
+    return fetch_precip(lat, lon, city_name)
 
-def fetch_monthly_precip(lat: float, lon: float) -> pd.DataFrame:
+# ------------------------------------------------------------------
+# MONTHLY PRECIP (12-month bar chart)
+# ------------------------------------------------------------------
+def fetch_monthly_precip(lat: float, lon: float):
     today = datetime.utcnow().date()
     start = today - timedelta(days=365)
 
@@ -104,105 +113,113 @@ def fetch_monthly_precip(lat: float, lon: float) -> pd.DataFrame:
     )
 
     data = safe_request_json(url)
-    if "__error__" in data:
-        st.error(f"Error fetching monthly data: {data['__error__']}")
-        return pd.DataFrame(columns=["month", "precip"])
 
-    if "daily" not in data or "time" not in data.get("daily", {}) or "precipitation_sum" not in data.get("daily", {}):
-        st.warning("Archive API returned no daily data for monthly aggregation. Showing empty monthly table.")
+    if "daily" not in data:
         return pd.DataFrame(columns=["month", "precip"])
 
     dates = data["daily"]["time"]
     precip = data["daily"]["precipitation_sum"]
+
     df = pd.DataFrame({"date": pd.to_datetime(dates), "precip": precip})
     df["month"] = df["date"].dt.to_period("M").dt.to_timestamp()
-    monthly = df.groupby("month", as_index=False)["precip"].sum().sort_values("month").tail(12)
-    return monthly
 
+    return df.groupby("month", as_index=False)["precip"].sum().tail(12)
 
-# -------------------------
-# App UI
-# -------------------------
+# ------------------------------------------------------------------
+# UI
+# ------------------------------------------------------------------
 st.title("🌧️ Brazil Precipitation Dashboard (7-day Rolling + Forecast)")
 
 city = st.selectbox("Select a city:", list(CITIES.keys()))
 lat, lon = CITIES[city]
 
-with st.spinner("Fetching hourly data..."):
-    df = fetch_precip(lat, lon)
+# ------------------------------------------------------------------
+# FETCH DATA (HOURLY + MONTHLY)
+# ------------------------------------------------------------------
+with st.spinner("Fetching hourly precipitation (cached for 1 hour)..."):
+    df = fetch_precip_cached(lat, lon, city)
 
-with st.spinner("Fetching monthly data (last 12 months)..."):
+with st.spinner("Fetching monthly precipitation..."):
     df_monthly = fetch_monthly_precip(lat, lon)
 
-# If df is empty, show friendly message and skip plotting
+# ------------------------------------------------------------------
+# HANDLE EMPTY HOURLY DATA
+# ------------------------------------------------------------------
 if df.empty:
-    st.warning("No hourly data available to plot. See debug output for details.")
-    with st.expander("🔍 Debug: raw response / monthly data"):
-        st.write("Hourly dataframe is empty. Monthly data (if any):")
-        st.dataframe(df_monthly)
+    st.error("No hourly precipitation data available.")
     st.stop()
 
-# Ensure times are timezone-aware in BRT for comparison
+# ------------------------------------------------------------------
+# SPLIT HISTORICAL VS FORECAST
+# ------------------------------------------------------------------
 now = datetime.now(BR_TZ)
-
-# split historical vs forecast safely
 try:
     df["is_forecast"] = df["time"] > now
 except Exception:
-    # If comparison fails for any reason, fall back to no-split (plot everything)
-    st.warning("Could not split history vs forecast due to timestamp types. Plotting full series.")
     df["is_forecast"] = False
 
 df_hist = df[df["is_forecast"] == False]
 df_fore = df[df["is_forecast"] == True]
 
-# Plot hourly
+# ------------------------------------------------------------------
+# LINE PLOT
+# ------------------------------------------------------------------
 fig = go.Figure()
+
 if not df_hist.empty:
-    fig.add_trace(
-        go.Scatter(
-            x=df_hist["time"],
-            y=df_hist["precip"],
-            mode="lines",
-            name="Historical Precipitation",
-            line=dict(width=3),
-        )
-    )
+    fig.add_trace(go.Scatter(
+        x=df_hist["time"],
+        y=df_hist["precip"],
+        mode="lines",
+        name="Historical",
+        line=dict(width=3),
+    ))
+
 if not df_fore.empty:
-    fig.add_trace(
-        go.Scatter(
-            x=df_fore["time"],
-            y=df_fore["precip"],
-            mode="lines",
-            name="Forecast Precipitation",
-            line=dict(width=3, dash="dash"),
-        )
-    )
-if df_hist.empty and df_fore.empty:
-    st.info("No plot data available after processing.")
-else:
-    fig.update_layout(
-        title=f"Hourly Precipitation — {city}",
-        xaxis_title="Date / Time (UTC-3)",
-        yaxis_title="Precipitation (mm)",
-        hovermode="x unified",
-        template="plotly_white",
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    fig.add_trace(go.Scatter(
+        x=df_fore["time"],
+        y=df_fore["precip"],
+        mode="lines",
+        name="Forecast",
+        line=dict(width=3, dash="dash"),
+    ))
 
-# Monthly bar chart
-st.subheader("📊 Total Monthly Precipitation — Last 12 Months")
+fig.update_layout(
+    title=f"Hourly Precipitation — {city}",
+    xaxis_title="Date / Time (UTC-3)",
+    yaxis_title="Precipitation (mm)",
+    hovermode="x unified",
+    template="plotly_white",
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+# ------------------------------------------------------------------
+# MONTHLY BAR PLOT
+# ------------------------------------------------------------------
+st.subheader("📊 Total Monthly Precipitation (Last 12 Months)")
+
 if df_monthly.empty:
-    st.info("No monthly precipitation data available for this location.")
+    st.info("No monthly data available.")
 else:
-    fig_month = go.Figure()
-    fig_month.add_trace(go.Bar(x=df_monthly["month"], y=df_monthly["precip"], name="Monthly total"))
-    fig_month.update_layout(xaxis_title="Month", yaxis_title="Precipitation (mm)", hovermode="x unified", template="plotly_white")
-    st.plotly_chart(fig_month, use_container_width=True)
+    fig_m = go.Figure()
+    fig_m.add_trace(go.Bar(
+        x=df_monthly["month"],
+        y=df_monthly["precip"],
+        name="Monthly Total",
+    ))
+    fig_m.update_layout(
+        xaxis_title="Month",
+        yaxis_title="Precipitation (mm)",
+        template="plotly_white"
+    )
+    st.plotly_chart(fig_m, use_container_width=True)
 
-# Debug
-with st.expander("🛠 Debug: Raw hourly data / API info"):
-    st.write("Hourly DataFrame:")
+# ------------------------------------------------------------------
+# DEBUG PANEL
+# ------------------------------------------------------------------
+with st.expander("🛠 Debug: Raw DataFrames"):
+    st.write("Hourly Data:")
     st.dataframe(df)
-    st.write("Monthly aggregated (last 12 months):")
+    st.write("Monthly Data:")
     st.dataframe(df_monthly)
