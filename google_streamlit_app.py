@@ -5,10 +5,11 @@ from datetime import datetime, timedelta
 import pytz
 import plotly.graph_objects as go
 import os
+import math
 
-# ------------------------------------------------------------
-# Branding (DO NOT MODIFY company_branding.py)
-# ------------------------------------------------------------
+# ------------------------------------------------------------------
+# Branding import (DO NOT MODIFY company_branding.py)
+# ------------------------------------------------------------------
 try:
     import company_branding as cb
 except Exception:
@@ -20,9 +21,9 @@ COMPANY_NAME = getattr(cb, "COMPANY_NAME", "") if cb else ""
 PRODUCT_NAME = getattr(cb, "PRODUCT_NAME", "Rainfall Insights") if cb else "Rainfall Insights"
 TAGLINE = getattr(cb, "TAGLINE", "Brazilian Precipitation Analytics") if cb else "Brazilian Precipitation Analytics"
 
-# ------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------
+# ------------------------------------------------------------------
+# Utilities
+# ------------------------------------------------------------------
 def is_valid_image(path: str) -> bool:
     if not path or not isinstance(path, str):
         return False
@@ -31,23 +32,25 @@ def is_valid_image(path: str) -> bool:
         return True
     return os.path.exists(path)
 
-def safe_json(url: str):
+def safe_request(url, params):
     try:
-        r = requests.get(url, timeout=15)
+        r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
         return r.json()
     except Exception as e:
         return {"error": True, "reason": str(e)}
 
-# ------------------------------------------------------------
-# Config
-# ------------------------------------------------------------
+# ------------------------------------------------------------------
+# CONFIG
+# ------------------------------------------------------------------
 BR_TZ = pytz.timezone("America/Sao_Paulo")
 st.set_page_config(page_title="Brazil Rain Dashboard", layout="wide")
 
-# ------------------------------------------------------------
+GOOGLE_API_KEY = st.secrets.get("GOOGLE_WEATHER_API_KEY", "")
+
+# ------------------------------------------------------------------
 # Header (logos left / right)
-# ------------------------------------------------------------
+# ------------------------------------------------------------------
 l, c, r = st.columns([1, 2, 1])
 
 with l:
@@ -76,9 +79,9 @@ with r:
 
 st.markdown("---")
 
-# ------------------------------------------------------------
+# ------------------------------------------------------------------
 # Cities
-# ------------------------------------------------------------
+# ------------------------------------------------------------------
 CITIES = {
     "Botucatu": (-22.8858, -48.4450),
     "Campinas": (-22.9058, -47.0608),
@@ -94,140 +97,154 @@ CITIES = {
     "Vassouras": (-22.4039, -43.6628),
 }
 
-# ------------------------------------------------------------
-# Open-Meteo: hourly precipitation (7d past + 2d forecast)
-# ------------------------------------------------------------
-def fetch_hourly_precip(lat, lon):
-    now = datetime.now(BR_TZ)
-    start = (now - timedelta(days=14)).strftime("%Y-%m-%d")
-    end = (now + timedelta(days=2)).strftime("%Y-%m-%d")
+# ------------------------------------------------------------------
+# Radius sampling (5 km)
+# ------------------------------------------------------------------
+def generate_radius_points(lat, lon, radius_km=5, step_km=2.5):
+    points = []
+    lat_km = 1 / 111
+    lon_km = 1 / (111 * math.cos(math.radians(lat)))
+    steps = int(radius_km / step_km)
 
-    url = (
-        "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={lat}&longitude={lon}"
-        "&hourly=precipitation"
-        f"&start_date={start}&end_date={end}"
-        "&timezone=America%2FSao_Paulo"
-    )
+    for i in range(-steps, steps + 1):
+        for j in range(-steps, steps + 1):
+            points.append((
+                lat + i * step_km * lat_km,
+                lon + j * step_km * lon_km
+            ))
+    return points
 
-    data = safe_json(url)
-    if data.get("error") or "hourly" not in data:
+# ------------------------------------------------------------------
+# Google Weather API – single point
+# ------------------------------------------------------------------
+def fetch_google_hourly_precip(lat, lon):
+    url = "https://weather.googleapis.com/v1/forecast/hours"
+
+    params = {
+        "location.latitude": lat,
+        "location.longitude": lon,
+        "hours": 384,
+        "unitsSystem": "METRIC",
+        "key": GOOGLE_API_KEY,
+    }
+
+    data = safe_request(url, params)
+    if data.get("error") or "forecastHours" not in data:
         return pd.DataFrame(columns=["time", "precip"]), data
 
-    df = pd.DataFrame({
-        "time": pd.to_datetime(data["hourly"]["time"], errors="coerce"),
-        "precip": data["hourly"]["precipitation"],
-    })
+    rows = []
+    for h in data["forecastHours"]:
+        rows.append({
+            "time": pd.to_datetime(h["forecastTime"]),
+            "precip": h.get("precipitation", {}).get("amount", {}).get("value", 0.0)
+        })
 
-    df["time"] = df["time"].dt.tz_localize("America/Sao_Paulo", nonexistent="shift_forward", ambiguous="NaT")
-    return df.sort_values("time").reset_index(drop=True), data
-
-@st.cache_data(ttl=3600)
-def fetch_hourly_cached(lat, lon):
-    return fetch_hourly_precip(lat, lon)
-
-# ------------------------------------------------------------
-# Open-Meteo ERA5: monthly totals (last 12 months)
-# ------------------------------------------------------------
-def fetch_monthly_precip(lat, lon):
-    end = datetime.utcnow().date()
-    start = end - timedelta(days=365)
-
-    url = (
-        "https://archive-api.open-meteo.com/v1/era5"
-        f"?latitude={lat}&longitude={lon}"
-        f"&start_date={start}&end_date={end}"
-        "&daily=precipitation_sum"
-        "&timezone=America%2FSao_Paulo"
-    )
-
-    data = safe_json(url)
-    if data.get("error") or "daily" not in data:
-        return pd.DataFrame(columns=["month", "precip"]), data
-
-    df = pd.DataFrame({
-        "date": pd.to_datetime(data["daily"]["time"], errors="coerce"),
-        "precip": data["daily"]["precipitation_sum"],
-    })
-
-    df["month"] = df["date"].dt.to_period("M").dt.to_timestamp()
-    df = df.groupby("month", as_index=False)["precip"].sum().tail(12)
+    df = pd.DataFrame(rows)
+    df["time"] = df["time"].dt.tz_convert("America/Sao_Paulo")
     return df, data
 
-@st.cache_data(ttl=3600)
-def fetch_monthly_cached(lat, lon):
-    return fetch_monthly_precip(lat, lon)
+# ------------------------------------------------------------------
+# Max precipitation within 5 km radius
+# ------------------------------------------------------------------
+def fetch_max_precip_radius(lat, lon):
+    points = generate_radius_points(lat, lon, radius_km=5)
+    dfs = []
+    raw = []
 
-# ------------------------------------------------------------
-# UI
-# ------------------------------------------------------------
-st.title("🌧️ Brazil Precipitation Dashboard")
+    for p_lat, p_lon in points:
+        df, raw_resp = fetch_google_hourly_precip(p_lat, p_lon)
+        raw.append(raw_resp)
+        if not df.empty:
+            dfs.append(df)
+
+    if not dfs:
+        return pd.DataFrame(columns=["time", "max_precip"]), raw
+
+    combined = pd.concat(dfs)
+    df_max = (
+        combined
+        .groupby("time", as_index=False)["precip"]
+        .max()
+        .rename(columns={"precip": "max_precip"})
+        .sort_values("time")
+    )
+
+    return df_max, raw
+
+@st.cache_data(ttl=3600)
+def fetch_max_precip_radius_cached(lat, lon):
+    return fetch_max_precip_radius(lat, lon)
+
+# ------------------------------------------------------------------
+# STREAMLIT UI
+# ------------------------------------------------------------------
+st.title("🌧️ Brazil Precipitation Dashboard (Google Weather API)")
 
 city = st.selectbox("Select a city:", list(CITIES.keys()))
 lat, lon = CITIES[city]
 
-with st.spinner("Loading hourly precipitation..."):
-    df_hourly, raw_hourly = fetch_hourly_cached(lat, lon)
+with st.spinner("Fetching Google Weather data (cached hourly)..."):
+    df_radius, raw_responses = fetch_max_precip_radius_cached(lat, lon)
 
-with st.spinner("Loading monthly precipitation..."):
-    df_monthly, raw_monthly = fetch_monthly_cached(lat, lon)
-
-# ------------------------------------------------------------
-# Hourly chart
-# ------------------------------------------------------------
-if not df_hourly.empty:
-    now = datetime.now(BR_TZ)
-    df_hourly["forecast"] = df_hourly["time"] > now
-
+# ------------------------------------------------------------------
+# Plot
+# ------------------------------------------------------------------
+if df_radius.empty:
+    st.warning("No precipitation data available.")
+else:
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df_hourly[~df_hourly["forecast"]]["time"],
-        y=df_hourly[~df_hourly["forecast"]]["precip"],
-        name="Observed",
+        x=df_radius["time"],
+        y=df_radius["max_precip"],
+        mode="lines",
+        name="Max precipitation (5 km radius)",
         line=dict(width=3)
     ))
-    fig.add_trace(go.Scatter(
-        x=df_hourly[df_hourly["forecast"]]["time"],
-        y=df_hourly[df_hourly["forecast"]]["precip"],
-        name="Forecast",
-        line=dict(width=3, dash="dash")
-    ))
 
     fig.update_layout(
-        title=f"Hourly Precipitation — {city}",
-        yaxis_title="mm",
+        title=f"Hourly Max Precipitation (5 km radius) — {city}",
+        xaxis_title="Date / Time (BRT)",
+        yaxis_title="Precipitation (mm)",
         hovermode="x unified",
         template="plotly_white",
     )
 
     st.plotly_chart(fig, use_container_width=True)
-else:
-    st.warning("No hourly data available.")
 
-# ------------------------------------------------------------
-# Monthly chart
-# ------------------------------------------------------------
-st.subheader("📊 Monthly Total — Last 12 Months")
+# ------------------------------------------------------------------
+# Current status card
+# ------------------------------------------------------------------
+if not df_radius.empty:
+    last_row = df_radius.iloc[-1]
+    val = float(last_row["max_precip"])
+    time_str = last_row["time"].strftime("%d/%m/%Y %H:%M")
 
-if not df_monthly.empty:
-    fig = go.Figure(go.Bar(
-        x=df_monthly["month"],
-        y=df_monthly["precip"]
-    ))
-    fig.update_layout(
-        yaxis_title="mm",
-        hovermode="x unified",
-        template="plotly_white",
+    if val <= 0:
+        label = "Not raining"
+        emoji = "☀️"
+    elif val <= 2:
+        label = "Mild rain"
+        emoji = "🌦️"
+    else:
+        label = "Heavy rain"
+        emoji = "⛈️"
+
+    st.markdown(
+        f"""
+        <div style="padding:12px;border-radius:10px;border:1px solid #e6e6e6;background:#ffffffcc;">
+            <strong>{emoji} Current Rain Status — {city}</strong><br/>
+            {label} · Last hour: <strong>{val:.2f} mm</strong><br/>
+            <small>{time_str} (BRT)</small>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("No monthly data available.")
 
-# ------------------------------------------------------------
+# ------------------------------------------------------------------
 # Debug
-# ------------------------------------------------------------
-with st.expander("Debug — Hourly API"):
-    st.json(raw_hourly)
+# ------------------------------------------------------------------
+with st.expander("🛠 Debug: Raw Google API responses"):
+    st.json(raw_responses)
 
-with st.expander("Debug — Monthly API"):
-    st.json(raw_monthly)
+with st.expander("🛠 Debug: Aggregated DataFrame"):
+    st.dataframe(df_radius)
