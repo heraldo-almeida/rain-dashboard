@@ -119,7 +119,7 @@ def safe_request_json(url: str):
 # ------------------------------------------------------------------
 def fetch_precip(lat, lon, city_name):
     now = datetime.now(BR_TZ)
-    start = now - timedelta(days=7)
+    start = now - timedelta(days=14)
 
     start_date = start.strftime("%Y-%m-%d")
     end_date = (now + timedelta(days=2)).strftime("%Y-%m-%d")
