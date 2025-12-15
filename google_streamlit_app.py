@@ -99,7 +99,7 @@ CITIES = {
 # ------------------------------------------------------------
 def fetch_hourly_precip(lat, lon):
     now = datetime.now(BR_TZ)
-    start = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+    start = (now - timedelta(days=14)).strftime("%Y-%m-%d")
     end = (now + timedelta(days=2)).strftime("%Y-%m-%d")
 
     url = (
